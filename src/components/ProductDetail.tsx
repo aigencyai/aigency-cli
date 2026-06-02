@@ -26,7 +26,7 @@
 import React from "react";
 import { Box, Text, useStdout } from "ink";
 import type { Product } from "../types.js";
-import { formatPrice, stars } from "../format.js";
+import { formatPrice, stars, stripAnsi } from "../format.js";
 
 /** Border (2 cols) + paddingX 1 each side (2 cols) eaten by the panel chrome. */
 const PANEL_CHROME_COLS = 4;
@@ -166,8 +166,9 @@ export function ProductDetail({
         <Box flexDirection="column" marginBottom={1}>
           {thumb.map((line, i) => (
             // Braille is fixed single-width art: render verbatim, never wrap.
-            <Text key={`thumb-${i}`} wrap="truncate">
-              {line}
+            // Strip any ANSI tint the server added; we color it ourselves.
+            <Text key={`thumb-${i}`} color={accent} wrap="truncate">
+              {stripAnsi(line)}
             </Text>
           ))}
         </Box>

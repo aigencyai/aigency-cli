@@ -31,7 +31,7 @@
 import React from "react";
 import { Box, Text, useStdout } from "ink";
 import type { Product } from "../types.js";
-import { formatPrice, stars, truncate } from "../format.js";
+import { formatPrice, stars, stripAnsi, truncate } from "../format.js";
 
 /** Fallback terminal width when stdout reports nothing usable. */
 const FALLBACK_WIDTH = 80;
@@ -110,8 +110,8 @@ const Card = React.memo(function Card({
           {Array.from({ length: thumbRows }, (_, r) => (
             // A lone space keeps an absent braille row from collapsing to zero
             // height, so a no-thumbnail card's title aligns with its siblings'.
-            <Text key={r} wrap="truncate">
-              {thumb[r] ?? " "}
+            <Text key={r} color={accent} wrap="truncate">
+              {stripAnsi(thumb[r] ?? " ")}
             </Text>
           ))}
         </Box>

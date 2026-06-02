@@ -59,3 +59,14 @@ export function truncate(s: string | undefined, n: number): string {
   if (n === 1) return "…"; // …
   return s.slice(0, n - 1) + "…";
 }
+
+/**
+ * Strip ANSI SGR color escapes (e.g. `\x1b[38;2;…m`) from a string. The shop
+ * API may return braille thumbnail lines pre-tinted with ANSI; we strip them so
+ * Ink measures + renders plain braille and applies its own color. Robust whether
+ * the server sends plain or styled braille.
+ */
+export function stripAnsi(s: string): string {
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/\x1b\[[0-9;]*m/g, "");
+}
