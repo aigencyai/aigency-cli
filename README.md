@@ -21,14 +21,15 @@ Online shopping was fine. We fixed it anyway.
 > Requires Node ≥ 18.
 
 ```bash
-# run it without installing
-npx github:aigencyai/aigency-cli
+# zero install — just run it
+npx aigency ray-ban aviators
 
-# …or jump straight into a brand
-npx github:aigencyai/aigency-cli ray-ban aviators
+# …or install it for real
+brew install aigencyai/tap/aigency   # macOS / Linux (Homebrew)
+npm i -g aigency                     # any platform
+
+aigency                              # then launch the picker anytime
 ```
-
-Homebrew (`brew install aigency`) and `npm i -g aigency` are on the way.
 
 ## Use it
 
