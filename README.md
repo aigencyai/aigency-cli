@@ -34,22 +34,30 @@ aigency                              # then launch the picker anytime
 ## Use it
 
 ```
-aigency                          # launch the brand picker
-aigency <brand>                  # open a brand
-aigency <brand> <query…>         # open a brand and search
+aigency                          # cold-open, then the store picker
+aigency <brand>                  # walk straight into a store
+aigency <brand> <query…>         # …and search on the way in
 ```
 
-The search box is a command line — arrows are sugar:
+Pick a store and you land on its **storefront** — four braille highlight tiles
+and a search field, no auto-search. From there the results render themselves the
+way the website does: one match opens as a detail card, a handful compare
+side-by-side, more fill the grid. The search box is a command line; arrows are sugar:
 
 | key | does |
 | --- | --- |
 | type + `enter` | search |
-| `↑` / `↓` | move the selection |
+| `↑` / `↓` (landing) | move the highlight tile · `enter` opens it |
+| `↑` / `↓` (results) | move the selection |
 | `enter` (empty) / `#2` | open the selected / Nth product |
-| `compare 1 and 2` | compare two products |
-| `tab` | cycle the suggested-query chips |
+| `compare 1 and 2` | compare two products side-by-side |
+| `tab` | cycle highlight tiles / suggested-query chips |
 | `o` (in detail) | open the product in your browser |
-| `esc` | back · `q` quit · `Ctrl-C` always quits |
+| `esc` | back a step · `q` quit · `Ctrl-C` always quits |
+
+It runs in the terminal's alternate screen (like `vim`/`less`): a clean full
+screen while you shop, your scrollback untouched on exit. Set `AIGENCY_NO_INTRO=1`
+to skip the cold-open.
 
 ## Brands
 

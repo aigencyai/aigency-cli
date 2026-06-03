@@ -92,6 +92,12 @@ export interface Highlight {
   query: string;
   /** Optional image URL associated with the highlight. */
   image?: string;
+  /**
+   * Pre-rendered braille "image" for the highlight — one string per row,
+   * supplied by the server when the request opts into braille thumbnails.
+   * Lets the store landing render each highlight as a little picture tile.
+   */
+  thumbnail?: string[];
 }
 
 /** Static, client-side description of a selectable brand. */

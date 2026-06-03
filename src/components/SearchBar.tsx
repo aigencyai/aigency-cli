@@ -39,10 +39,12 @@ export interface SearchBarProps {
    * or omitted values highlight nothing.
    */
   focusedChipIndex?: number;
+  /** Override the input placeholder (defaults to the command-line hint). */
+  placeholder?: string;
 }
 
 /** Placeholder copy that teaches the command-line affordances. */
-const PLACEHOLDER = 'search, type #2 for details, or "compare 1 and 2"…';
+const DEFAULT_PLACEHOLDER = 'search, type #2 for details, or "compare 1 and 2"…';
 
 /** Max chips shown — restraint over clutter (this is a showpiece). */
 const MAX_CHIPS = 6;
@@ -60,6 +62,7 @@ export function SearchBar({
   chips,
   brandAccent,
   focusedChipIndex,
+  placeholder = DEFAULT_PLACEHOLDER,
 }: SearchBarProps): React.ReactElement {
   const { stdout } = useStdout();
   // Width is read so the wrapped chip row honors the real terminal; Ink's
@@ -80,7 +83,7 @@ export function SearchBar({
           value={value}
           onChange={onChange}
           onSubmit={onSubmit}
-          placeholder={PLACEHOLDER}
+          placeholder={placeholder}
         />
       </Box>
 
