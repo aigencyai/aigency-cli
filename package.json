@@ -4,7 +4,7 @@
   "type": "module",
   "description": "Shop real brand catalogs from your terminal. An AI shopping assistant, as a CLI — braille product art and all.",
   "bin": {
-    "aigency": "./dist/cli.js"
+    "aigency": "dist/cli.js"
   },
   "files": [
     "dist"
