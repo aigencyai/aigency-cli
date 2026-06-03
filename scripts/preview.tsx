@@ -8,7 +8,8 @@
  *
  * Note: ink-testing-library renders to a fixed-width virtual stdout and strips
  * ANSI color, so this verifies LAYOUT, not color. Color logic (readableAccent)
- * is covered by src/__tests__/layout.test.ts.
+ * is covered by src/__tests__/layout.test.ts. The intro animation is shown as a
+ * few static frames; run the live CLI to see it move.
  */
 
 import React from "react";
@@ -16,9 +17,12 @@ import { render } from "ink-testing-library";
 
 import BrandPicker from "../src/components/BrandPicker.js";
 import ResultsGrid from "../src/components/ResultsGrid.js";
+import Comparison from "../src/components/Comparison.js";
 import ProductDetail from "../src/components/ProductDetail.js";
 import SearchBar from "../src/components/SearchBar.js";
 import StatusBar from "../src/components/StatusBar.js";
+import StoreLanding from "../src/components/StoreLanding.js";
+import WordmarkIgnition from "../src/components/WordmarkIgnition.js";
 import { BRANDS } from "../src/brands.js";
 import { readableAccent } from "../src/layout.js";
 import type { Highlight, Product } from "../src/types.js";
@@ -47,6 +51,9 @@ const products: Product[] = [
     title: "Wayfarer",
     price: 161,
     rating_value: 4.8,
+    why_it_matches: "The everyday icon — acetate frame, endless colorways.",
+    colors: ["Black", "Tortoise"],
+    available_sizes: ["50", "52", "54"],
     in_stock: true,
     thumbnail: [
       "⠀⣀⣤⣤⣤⣤⣤⣤⣄⡀⠀⠀⠀⠀",
@@ -63,9 +70,10 @@ const products: Product[] = [
 ];
 
 const chips: Highlight[] = [
-  { title: "New Arrivals", query: "new arrivals" },
-  { title: "Polarized", query: "polarized" },
-  { title: "Best Sellers", query: "best sellers" },
+  { title: "Sunglasses", query: "sunglasses", thumbnail: products[0].thumbnail },
+  { title: "Eyeglasses", query: "eyeglasses", thumbnail: products[1].thumbnail },
+  { title: "Cases", query: "cases" },
+  { title: "Polarized", query: "polarized", thumbnail: products[0].thumbnail },
 ];
 
 function frame(label: string, el: React.ReactElement): void {
@@ -74,8 +82,29 @@ function frame(label: string, el: React.ReactElement): void {
 }
 
 frame(
+  "INTRO · frame 0 (embers)",
+  <WordmarkIgnition accent={accent} onDone={() => {}} previewFrame={2} />,
+);
+frame(
+  "INTRO · frame 15 (igniting)",
+  <WordmarkIgnition accent={accent} onDone={() => {}} previewFrame={15} />,
+);
+frame(
+  "INTRO · frame 34 (tagline)",
+  <WordmarkIgnition accent={accent} onDone={() => {}} previewFrame={34} />,
+);
+frame(
   "BRAND PICKER",
   <BrandPicker brands={BRANDS} onSelect={() => {}} selectedKey="ray-ban" />,
+);
+frame(
+  "STORE LANDING",
+  <StoreLanding
+    brand={{ key: "ray-ban", name: "Ray-Ban", accent }}
+    highlights={chips}
+    tileIndex={0}
+    accent={accent}
+  />,
 );
 frame(
   "SEARCH BAR",
@@ -93,16 +122,29 @@ frame(
   <ResultsGrid products={products} selectedIndex={1} accent={accent} />,
 );
 frame(
-  "PRODUCT DETAIL",
+  "COMPARISON (2-up)",
+  <Comparison
+    products={products.slice(0, 2)}
+    selectedIndex={0}
+    accent={accent}
+  />,
+);
+frame(
+  "SINGLE RESULT (embedded PDP)",
+  <ProductDetail product={products[0]} accent={accent} showFooter={false} />,
+);
+frame(
+  "PRODUCT DETAIL (full-screen)",
   <ProductDetail product={products[0]} accent={accent} />,
 );
 frame(
   "STATUS BAR",
   <StatusBar
     brand={{ key: "ray-ban", name: "Ray-Ban", accent }}
+    query="aviators"
     count={3}
     durationMs={214}
-    hint="↑↓ select · enter open · tab chips · esc"
+    hint="↑↓ select · enter open · #N · tab chips · esc"
     accent={accent}
   />,
 );

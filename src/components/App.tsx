@@ -1,38 +1,41 @@
 /**
  * App — the root component. Owns ALL application state and the entire keyboard
- * model, wiring a guided, command-line-driven flow across three views.
+ * model, wiring a guided, command-line-driven flow across four views.
  *
- *   ┌─────────┐  enter / 1-9   ┌─────────┐   enter (open #N / empty)  ┌────────┐
- *   │ picker  │ ──────────────▶│ results │ ──────────────────────────▶│ detail │
- *   └─────────┘                └─────────┘ ◀──────────────────────────└────────┘
- *        ▲   q quit                 │  esc                     esc
- *        └──────────────────────────┘
+ *   ┌───────┐ done/any key ┌────────┐  enter/1-9   ┌─────────────────────┐
+ *   │ intro │ ────────────▶│ picker │ ────────────▶│ store               │
+ *   └───────┘              └────────┘              │  landing ⇄ results  │
+ *                              ▲  esc               └─────────┬───────────┘
+ *                              └──── esc ─────────────────────┤  enter/#N
+ *                                                              ▼  esc
+ *                                                         ┌────────┐
+ *                                                         │ detail │
+ *                                                         └────────┘
  *
- * Keyboard model (the input line is a COMMAND line; arrows are sugar)
- * ───────────────────────────────────────────────────────────────────
- *   PICKER   arrows move the grid highlight (pickerIndex); up/down step one real
- *            row (column count shared with BrandPicker); 1-9 jump+select; enter
- *            selects the highlighted brand; q quits. Selecting → load highlights
- *            (best-effort) + go to results + run the initial search.
+ * The STORE view is chat-shaped: a content region (highlight tiles before any
+ * search, then results — single / comparison / grid by count, mirroring the
+ * web) fills the top, and the search field is pinned at the bottom with the
+ * assistant's answer typed just above it. NOTHING runs on store entry — the
+ * landing invites a choice instead of auto-searching.
  *
- *   RESULTS  the SearchBar input is ALWAYS focused for typing.
- *            ↑/↓        move selectedIndex (ink-text-input ignores up/down).
- *            Tab        cycle focusedChipIndex through chips (-1 = none).
- *            Enter      · a chip is focused → run that chip's query, reset focus
- *                       · no chip focused → route the raw input through
- *                         resolveInput():
- *                           current/empty → open detail for selectedIndex
- *                           open #N / N   → open detail for that result
- *                           compare       → run a compare search built from the
- *                                           RESOLVED product titles
- *                           search        → normal search
- *            Esc        back to picker.
- *            (no bare 'q' quit here — 'q' is a valid search character.)
- *
- *   DETAIL   Esc back to results; 'o' opens product.url in the OS browser;
- *            'q' quits.
- *
- *   GLOBAL   Ctrl+C always quits (handled by Ink via exitOnCtrlC).
+ * Keyboard model
+ * ──────────────
+ *   INTRO    any key skips to the picker.
+ *   PICKER   arrows move the grid highlight; up/down step one row; 1-9 jump+
+ *            select; enter selects; q quits.
+ *   STORE    the SearchBar is ALWAYS focused for typing.
+ *     landing (no search yet)
+ *            ↑↓ (and ←→ when the box is empty) move the focused highlight tile;
+ *            Tab cycles tiles; Enter on an empty box opens the focused tile; a
+ *            bare "1".."N" + Enter opens that tile; anything else searches.
+ *            Esc → picker.
+ *     results
+ *            ↑↓ move the selection; Tab cycles chips; Enter routes the input
+ *            through resolveInput (current/open #N/compare/search); a focused
+ *            chip runs its query. Esc → back to the landing.
+ *   DETAIL   esc back to results; 'o' opens the PDP in the browser AND records a
+ *            click-through; 'q' quits.
+ *   GLOBAL   Ctrl+C always quits (Ink via exitOnCtrlC).
  */
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
@@ -42,42 +45,47 @@ import Spinner from "ink-spinner";
 
 import type { BrandInfo, Highlight, Product } from "../types.js";
 import { BRANDS, getBrand } from "../brands.js";
-import { getHighlights, search } from "../api.js";
-import { resolveInput } from "../resolve.js";
+import { getHighlights, search, trackClickThrough } from "../api.js";
+import { resolveInput, resolveLanding } from "../resolve.js";
 import { columnsForPicker, readableAccent } from "../layout.js";
+import { resultsView } from "../view.js";
+import { newSessionId } from "../session.js";
 
 import BrandPicker from "./BrandPicker.js";
 import SearchBar from "./SearchBar.js";
 import ResultsGrid from "./ResultsGrid.js";
+import Comparison from "./Comparison.js";
 import ProductDetail from "./ProductDetail.js";
+import StoreLanding, { MAX_TILES } from "./StoreLanding.js";
 import StatusBar from "./StatusBar.js";
 import Wordmark from "./Wordmark.js";
+import WordmarkIgnition from "./WordmarkIgnition.js";
 import TypewriterText from "./TypewriterText.js";
 
-/** The three top-level views the TUI can be in. */
-export type View = "picker" | "results" | "detail";
+/** The four top-level views the TUI can be in. */
+export type View = "intro" | "picker" | "store" | "detail";
 
 export interface AppProps {
-  /** Optional brand key to start on (skips the picker if valid). */
+  /** Optional brand key to start on (skips the intro + picker if valid). */
   initialBrand?: string;
   /** Optional query to run on the initial brand. */
   initialQuery?: string;
 }
 
-/** Default query used when no initialQuery is supplied. */
-const DEFAULT_QUERY = "best sellers";
-
 /** Neutral cyan used before a brand is picked (matches brands.ts FALLBACK). */
 const NEUTRAL_ACCENT = "#7dd3fc";
 
-/** Fallback terminal width when stdout reports nothing usable. */
+/** Fallback terminal dimensions when stdout reports nothing usable. */
 const FALLBACK_WIDTH = 80;
+const FALLBACK_ROWS = 24;
+
+/** Hard cap on the typed-out answer so a long reply can't push the input off-screen. */
+const ANSWER_MAX_CHARS = 240;
 
 /**
  * Open a URL in the OS default browser. Dynamically imports child_process so
- * the dependency is only paid when the user actually opens a product, and so
- * the module graph stays light for the common (non-opening) path. Best-effort:
- * any failure is swallowed — opening a browser must never crash the TUI.
+ * the dependency is only paid when the user actually opens a product. Best-
+ * effort: any failure is swallowed — opening a browser must never crash the TUI.
  */
 async function openUrl(url: string): Promise<void> {
   try {
@@ -107,9 +115,9 @@ export function App({
   const { isRawModeSupported } = useStdin();
   const { stdout } = useStdout();
 
-  // Terminal width, made REACTIVE: Ink reflows Yoga on resize but does not
-  // re-run our width-dependent JS (column counts, arrow stride), so we force a
-  // re-render on SIGWINCH and re-read the width each render.
+  // Terminal size, made REACTIVE: Ink reflows Yoga on resize but does not
+  // re-run our size-dependent JS (column counts, row budgets), so force a
+  // re-render on SIGWINCH and re-read width + rows each render.
   const [, bumpOnResize] = useState(0);
   useEffect(() => {
     const onResize = (): void => bumpOnResize((n) => n + 1);
@@ -120,121 +128,165 @@ export function App({
   }, []);
   const width =
     stdout?.columns && stdout.columns > 0 ? stdout.columns : FALLBACK_WIDTH;
+  const rows = stdout?.rows && stdout.rows > 0 ? stdout.rows : FALLBACK_ROWS;
+
+  // ── Session: one id per launch, groups all this run's queries + the click-
+  // through into a single portal session. Lazily minted once. ──────────────
+  const sessionRef = useRef<string>("");
+  if (!sessionRef.current) sessionRef.current = newSessionId();
+  const sessionId = sessionRef.current;
 
   // ── State (all owned here) ────────────────────────────────────────────
   const startBrand = initialBrand ? getBrand(initialBrand) : undefined;
+  // Intro plays only on a cold start (no brand arg) unless opted out.
+  const introEnabled = !startBrand && !process.env.AIGENCY_NO_INTRO;
 
   const [brand, setBrand] = useState<BrandInfo | undefined>(startBrand);
-  const [query, setQuery] = useState<string>(initialQuery ?? "");
+  const [query, setQuery] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
   const [results, setResults] = useState<Product[]>([]);
   const [answer, setAnswer] = useState<string | undefined>(undefined);
+  const [activeQuery, setActiveQuery] = useState<string | undefined>(undefined);
   const [selectedIndex, setSelectedIndex] = useState<number>(0);
-  const [view, setView] = useState<View>(startBrand ? "results" : "picker");
+  const [view, setView] = useState<View>(
+    startBrand ? "store" : introEnabled ? "intro" : "picker",
+  );
   const [error, setError] = useState<string | undefined>(undefined);
   const [highlights, setHighlights] = useState<Highlight[]>([]);
+  const [highlightsLoading, setHighlightsLoading] = useState<boolean>(false);
   const [durationMs, setDurationMs] = useState<number | undefined>(undefined);
+  // Whether a search has run in the current store (landing vs results).
+  const [hasSearched, setHasSearched] = useState<boolean>(false);
 
-  // Picker highlight: arrows move this; 1-9 jump to it; Enter selects it.
+  // Picker highlight; landing tile focus; results chip focus.
   const [pickerIndex, setPickerIndex] = useState<number>(0);
-  // Chip focus on the results view: -1 = none (Enter routes the input line).
+  const [tileIndex, setTileIndex] = useState<number>(0);
   const [focusedChipIndex, setFocusedChipIndex] = useState<number>(-1);
 
-  // The accent in play right now (brand once chosen, neutral before), adjusted
-  // for legibility so dark brand colors (navy/maroon) stay readable on a dark
-  // terminal. This is the accent we pass to every accent-tinted child.
+  // Readable accent (brand once chosen, neutral before).
   const accent =
     readableAccent(brand?.accent ?? NEUTRAL_ACCENT) ?? NEUTRAL_ACCENT;
 
-  // Visible chips must match what SearchBar renders so Tab focus + Enter agree
-  // on the same list (SearchBar caps at 6; keep this in lockstep).
+  // Visible chips on the results screen (kept in lockstep with SearchBar's cap).
   const visibleChips = highlights.slice(0, 6);
+  // Number of landing tiles (kept in lockstep with StoreLanding).
+  const tileCount = Math.min(MAX_TILES, highlights.length);
 
-  // Picker column count, shared with BrandPicker so up/down step one real row.
   const pickerColumns = columnsForPicker(width);
 
   // ── Actions ──────────────────────────────────────────────────────────
 
-  // Guards against the classic last-completion-wins race: searches are LLM-
-  // backed with variable latency, so a slow earlier search could otherwise
-  // clobber a newer one. We abort the prior request and ignore any resolution
-  // that isn't the latest (tracked by a monotonic id).
+  // Guards the classic last-completion-wins race: abort the prior request and
+  // ignore any resolution that isn't the latest (tracked by a monotonic id).
   const reqSeq = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
+  // Same last-write-wins guard for the (best-effort) highlights fetch, so a slow
+  // prior brand's highlights can't clobber a brand the user just switched to.
+  const highlightsSeq = useRef(0);
 
-  /** Run a search and load the results into state. Keeps prior results on error. */
-  const runSearch = useCallback(async (b: BrandInfo, q: string) => {
-    abortRef.current?.abort();
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
-    const myId = ++reqSeq.current;
+  /** Run a search and load results. Keeps prior results visible on error. */
+  const runSearch = useCallback(
+    async (b: BrandInfo, q: string) => {
+      abortRef.current?.abort();
+      const ctrl = new AbortController();
+      abortRef.current = ctrl;
+      const myId = ++reqSeq.current;
 
-    setLoading(true);
-    setError(undefined);
-    setAnswer(undefined); // drop the prior query's answer while the new one runs
-    setFocusedChipIndex(-1);
-    const started = Date.now();
-    try {
-      const res = await search(b.key, q, ctrl.signal);
-      if (myId !== reqSeq.current) return; // superseded by a newer search
-      setResults(Array.isArray(res.products) ? res.products : []);
-      setAnswer(res.answer);
-      setSelectedIndex(0);
-      setDurationMs(res.meta?.duration_ms ?? Date.now() - started);
-    } catch (err) {
-      if (myId !== reqSeq.current) return; // superseded — swallow (incl. abort)
-      if (err instanceof Error && err.name === "AbortError") return;
-      // Keep the prior results visible; just surface the error line.
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      if (myId === reqSeq.current) setLoading(false);
-    }
-  }, []);
+      setLoading(true);
+      setError(undefined);
+      setAnswer(undefined); // drop the prior answer while the new one runs
+      setActiveQuery(q);
+      setHasSearched(true); // leave the landing for the results view
+      setFocusedChipIndex(-1);
+      setQuery(""); // clear the box so Enter opens the selection (resolveInput)
+      const started = Date.now();
+      try {
+        const res = await search(b.key, q, sessionId, ctrl.signal);
+        if (myId !== reqSeq.current) return; // superseded by a newer search
+        setResults(Array.isArray(res.products) ? res.products : []);
+        setAnswer(res.answer);
+        setSelectedIndex(0);
+        setDurationMs(res.meta?.duration_ms ?? Date.now() - started);
+      } catch (err) {
+        if (myId !== reqSeq.current) return; // superseded — swallow (incl. abort)
+        if (err instanceof Error && err.name === "AbortError") return;
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (myId === reqSeq.current) setLoading(false);
+      }
+    },
+    [sessionId],
+  );
+
+  /** Load a brand's highlights (best-effort; never blocks or fails a flow). */
+  const loadHighlights = useCallback(
+    (b: BrandInfo) => {
+      const myId = ++highlightsSeq.current;
+      setHighlightsLoading(true);
+      void getHighlights(b.key, sessionId)
+        .then((items) => {
+          if (myId === highlightsSeq.current) setHighlights(items);
+        })
+        .finally(() => {
+          if (myId === highlightsSeq.current) setHighlightsLoading(false);
+        });
+    },
+    [sessionId],
+  );
 
   /**
-   * Select a brand: load highlights, switch to results, run the initial search.
-   * Seeds with DEFAULT_QUERY (not leftover input text) and clears the box so the
-   * user starts fresh — which also keeps this callback stable across keystrokes.
+   * Select a brand: go to its store LANDING (no search), reset per-store state,
+   * and load highlights in the background.
    */
   const selectBrand = useCallback(
     (b: BrandInfo) => {
       setBrand(b);
-      setView("results");
+      setView("store");
+      setHasSearched(false);
+      setResults([]);
+      setAnswer(undefined);
+      setActiveQuery(undefined);
+      setError(undefined);
+      setQuery("");
+      setTileIndex(0);
       setFocusedChipIndex(-1);
-      setQuery(""); // empty box, ready to type; results show DEFAULT_QUERY
-      // Highlights are best-effort and never block (or fail) the search.
-      void getHighlights(b.key).then(setHighlights);
-      void runSearch(b, DEFAULT_QUERY);
+      setHighlights([]);
+      loadHighlights(b);
     },
-    [runSearch],
+    [loadHighlights],
   );
 
-  // ── Initial search (CLI launched straight into a brand) — runs ONCE ─────
-  const didInitialSearch = useRef(false);
+  // ── Initial brand (CLI launched straight into a store) — runs ONCE ──────
+  const didInit = useRef(false);
   useEffect(() => {
-    if (didInitialSearch.current) return;
+    if (didInit.current) return;
     if (!startBrand) return;
-    didInitialSearch.current = true;
-    const q = initialQuery || DEFAULT_QUERY;
-    setQuery(q);
-    void getHighlights(startBrand.key).then(setHighlights);
-    void runSearch(startBrand, q);
-    // Intentionally one-shot: depends only on startBrand/initialQuery which are
-    // fixed for the lifetime of the process (derived from CLI args).
-  }, [startBrand, initialQuery, runSearch]);
+    didInit.current = true;
+    loadHighlights(startBrand);
+    // An explicit initial query searches immediately; otherwise show the landing.
+    if (initialQuery) void runSearch(startBrand, initialQuery);
+  }, [startBrand, initialQuery, runSearch, loadHighlights]);
+
+  /** Skip/finish the intro → picker. Idempotent (timer + keypress both call it). */
+  const finishIntro = useCallback(() => {
+    setView((v) => (v === "intro" ? "picker" : v));
+  }, []);
 
   // ── Input handling ──────────────────────────────────────────────────────
-  // Gated on isRawModeSupported: under a non-TTY there is no raw mode and Ink's
-  // useInput would otherwise throw trying to enable it.
   const handleInput = useCallback(
     (input: string, key: Key) => {
+      // ── INTRO: any key skips. ───────────────────────────────────────────
+      if (view === "intro") {
+        finishIntro();
+        return;
+      }
+
       // ── PICKER ──────────────────────────────────────────────────────────
       if (view === "picker") {
         if (input === "q") {
           exit();
           return;
         }
-        // 1-9 jump to that brand AND select it.
         const n = Number.parseInt(input, 10);
         if (!Number.isNaN(n) && n >= 1 && n <= Math.min(9, BRANDS.length)) {
           const picked = BRANDS[n - 1];
@@ -244,9 +296,6 @@ export function App({
           }
           return;
         }
-        // Arrows move the highlight across the row-major grid: left/right step by
-        // one, up/down by the real column count (shared with BrandPicker) so a
-        // vertical move lands exactly one visual row away.
         if (key.leftArrow) {
           setPickerIndex((i) => Math.max(0, i - 1));
         } else if (key.rightArrow) {
@@ -262,9 +311,40 @@ export function App({
         return;
       }
 
-      // ── RESULTS ───────────────────────────────────────────────────────────
-      if (view === "results") {
-        // Up/Down move the selection (ink-text-input ignores these, no conflict).
+      // ── STORE ─────────────────────────────────────────────────────────────
+      if (view === "store") {
+        if (!hasSearched) {
+          // LANDING: tile navigation. Enter is owned by SearchBar.onSubmit.
+          if (key.escape) {
+            setView("picker");
+            return;
+          }
+          if (tileCount === 0) return; // nothing to navigate; just type
+          if (key.tab) {
+            setTileIndex((i) => (i >= tileCount - 1 ? 0 : i + 1));
+            return;
+          }
+          if (key.upArrow) {
+            setTileIndex((i) => Math.max(0, i - 1));
+            return;
+          }
+          if (key.downArrow) {
+            setTileIndex((i) => Math.min(tileCount - 1, i + 1));
+            return;
+          }
+          // ←→ move tiles ONLY when the box is empty (else they edit the text).
+          if (query === "" && key.leftArrow) {
+            setTileIndex((i) => Math.max(0, i - 1));
+            return;
+          }
+          if (query === "" && key.rightArrow) {
+            setTileIndex((i) => Math.min(tileCount - 1, i + 1));
+            return;
+          }
+          return;
+        }
+
+        // RESULTS: selection + chips. Enter is owned by SearchBar.onSubmit.
         if (key.upArrow) {
           setSelectedIndex((i) => Math.max(0, i - 1));
           return;
@@ -273,7 +353,6 @@ export function App({
           setSelectedIndex((i) => Math.min(results.length - 1, i + 1));
           return;
         }
-        // Tab cycles chip focus: none → 0 → 1 → … → last → none.
         if (key.tab) {
           if (visibleChips.length === 0) return;
           setFocusedChipIndex((i) =>
@@ -282,20 +361,26 @@ export function App({
           return;
         }
         if (key.escape) {
-          setView("picker");
+          // Back to the store landing (the "entrance"), not all the way out.
+          // Clear the prior search so the landing is clean (the answer line
+          // isn't gated on hasSearched, so a stale answer would otherwise linger).
+          setHasSearched(false);
           setFocusedChipIndex(-1);
+          setQuery("");
+          setResults([]);
+          setAnswer(undefined);
+          setActiveQuery(undefined);
+          setSelectedIndex(0);
+          setDurationMs(undefined);
           return;
         }
-        // Enter is handled by SearchBar.onSubmit (TextInput owns Enter) so the
-        // input value is current; see handleSubmit below. We intentionally do
-        // NOT handle key.return here to avoid double-firing.
         return;
       }
 
       // ── DETAIL ────────────────────────────────────────────────────────────
       if (view === "detail") {
         if (key.escape) {
-          setView("results");
+          setView("store");
           return;
         }
         if (input === "q") {
@@ -304,39 +389,64 @@ export function App({
         }
         if (input === "o") {
           const p = results[selectedIndex];
-          const url = typeof p?.url === "string" ? p.url : undefined;
-          if (url) void openUrl(url);
+          if (p && brand) {
+            const url = typeof p.url === "string" ? p.url : undefined;
+            // Record the click-through (best-effort) THEN open the browser.
+            void trackClickThrough(
+              { brand: brand.key, product: p.title, url },
+              sessionId,
+            );
+            if (url) void openUrl(url);
+          }
           return;
         }
       }
     },
     [
       view,
+      finishIntro,
       exit,
       selectBrand,
       pickerColumns,
       pickerIndex,
+      hasSearched,
+      tileCount,
+      query,
       results,
       selectedIndex,
       visibleChips.length,
+      brand,
+      sessionId,
     ],
   );
 
   useInput(handleInput, { isActive: isRawModeSupported });
 
   /**
-   * Results-view Enter, routed through the resolver. A focused chip short-
-   * circuits to running that chip's query; otherwise the raw input decides.
+   * Store-view Enter, routed through the resolver. On the landing it opens a
+   * highlight tile; in results it runs a chip / opens a card / compares / searches.
    */
   const handleSubmit = useCallback(
     (raw: string) => {
       if (!brand) return;
 
-      // A focused chip wins: run its query, drop focus, clear the input.
+      // ── LANDING ─────────────────────────────────────────────────────────
+      if (!hasSearched) {
+        const tiles = highlights.slice(0, MAX_TILES);
+        const resolved = resolveLanding(raw, tiles.length, tileIndex);
+        if (resolved.kind === "tile") {
+          const h = tiles[resolved.index];
+          if (h) void runSearch(brand, h.query); // no-op if the tile is absent
+        } else {
+          void runSearch(brand, resolved.query);
+        }
+        return;
+      }
+
+      // ── RESULTS ───────────────────────────────────────────────────────────
+      // A focused chip wins: run its query, drop focus.
       if (focusedChipIndex >= 0 && focusedChipIndex < visibleChips.length) {
         const chip = visibleChips[focusedChipIndex];
-        setFocusedChipIndex(-1);
-        setQuery(chip.query);
         void runSearch(brand, chip.query);
         return;
       }
@@ -344,131 +454,257 @@ export function App({
       const resolved = resolveInput(raw, results.length);
       switch (resolved.kind) {
         case "current": {
-          // Open the currently-selected card — but not mid-search, when the
-          // displayed results still belong to the PREVIOUS query.
-          if (loading) return;
+          if (loading) return; // results are stale mid-search
           if (results.length > 0) setView("detail");
           return;
         }
         case "open": {
-          if (loading) return; // results are stale until the new search lands
+          if (loading) return;
           setSelectedIndex(resolved.index);
           setView("detail");
           return;
         }
         case "compare": {
-          // Build a compare query from the RESOLVED product titles so the
-          // backend compares the actual items the user referenced.
           const titles = resolved.indices
             .map((i) => results[i]?.title)
             .filter((t): t is string => Boolean(t));
           const q =
             titles.length >= 2 ? `compare ${titles.join(" vs ")}` : raw.trim();
-          setQuery(q);
           void runSearch(brand, q);
           return;
         }
         case "search": {
-          setQuery(resolved.query);
           void runSearch(brand, resolved.query);
           return;
         }
       }
     },
-    [brand, focusedChipIndex, visibleChips, results, runSearch, loading],
+    [
+      brand,
+      hasSearched,
+      highlights,
+      tileIndex,
+      focusedChipIndex,
+      visibleChips,
+      results,
+      runSearch,
+      loading,
+    ],
   );
 
   // ── Render ────────────────────────────────────────────────────────────
   const selectedProduct: Product | undefined = results[selectedIndex];
 
-  // Contextual footer hint for the results view (the only view with a StatusBar).
-  const hint = loading
-    ? "searching…"
-    : focusedChipIndex >= 0
-      ? "enter run · tab next · esc"
-      : visibleChips.length > 0
-        ? "↑↓ select · enter open · tab chips · esc"
-        : "↑↓ select · enter open · #N · esc";
+  // Row budget for the store content region (a safety net; overflow is also
+  // clipped). Reserve header + answer + search + status + margins.
+  const reserved =
+    2 + (error ? 1 : 0) + 2 + 2 + (answer && !loading ? 3 : 0);
+  const contentRows = Math.max(4, rows - reserved);
+  const gridMaxRows = Math.max(1, Math.floor((contentRows - 2) / 8));
+  const singleDescLines = Math.max(1, Math.min(6, contentRows - 12));
 
-  return (
-    <Box flexDirection="column" paddingX={1}>
+  // Header is pinned (flexShrink=0) so the content region — not the chrome — is
+  // what shrinks/clips on a short terminal.
+  const header = (
+    <Box flexShrink={0} flexDirection="column">
       <Box marginBottom={1}>
         <Wordmark accent={accent} />
       </Box>
-
       {error ? (
         <Box marginBottom={1}>
           <Text color="red">⚠ {error}</Text>
         </Box>
       ) : null}
+    </Box>
+  );
 
-      {view === "picker" ? (
-        <BrandPicker
-          brands={BRANDS}
-          onSelect={selectBrand}
-          selectedKey={BRANDS[pickerIndex]?.key}
-        />
-      ) : null}
+  // ── INTRO ────────────────────────────────────────────────────────────────
+  if (view === "intro") {
+    return (
+      <Box width="100%" height={rows} overflow="hidden">
+        <WordmarkIgnition accent={accent} onDone={finishIntro} />
+      </Box>
+    );
+  }
 
-      {view === "results" ? (
-        <Box flexDirection="column">
-          <SearchBar
-            value={query}
-            onChange={setQuery}
-            onSubmit={handleSubmit}
-            chips={highlights}
-            brandAccent={accent}
-            focusedChipIndex={focusedChipIndex}
-          />
-
-          {/* Conversational answer, typed out above the results. Rendered in the
-              default foreground (NOT the accent) so it stays readable regardless
-              of how dark a brand's color is. */}
-          {answer && !loading ? (
-            <Box marginTop={1}>
-              <TypewriterText text={answer} />
-            </Box>
-          ) : null}
-
-          <Box marginTop={1}>
-            {loading ? (
-              <Text>
-                <Text color={accent}>
-                  <Spinner type="dots" />
-                </Text>{" "}
-                <Text dimColor>searching {brand?.name ?? ""}…</Text>
-              </Text>
-            ) : (
-              <ResultsGrid
-                products={results}
-                selectedIndex={selectedIndex}
-                accent={accent}
-              />
-            )}
-          </Box>
-
-          <StatusBar
-            brand={brand}
-            count={results.length}
-            durationMs={durationMs}
-            hint={hint}
-            accent={accent}
+  // ── PICKER ─────────────────────────────────────────────────────────────
+  if (view === "picker") {
+    return (
+      <Box flexDirection="column" height={rows} paddingX={1}>
+        {header}
+        <Box
+          flexGrow={1}
+          flexShrink={1}
+          minHeight={0}
+          flexDirection="column"
+          overflow="hidden"
+        >
+          <BrandPicker
+            brands={BRANDS}
+            onSelect={selectBrand}
+            selectedKey={BRANDS[pickerIndex]?.key}
           />
         </Box>
-      ) : null}
+      </Box>
+    );
+  }
 
-      {view === "detail" ? (
-        selectedProduct ? (
-          // ProductDetail renders its own "esc back · o open · q quit" footer,
-          // so no StatusBar here — it would duplicate the hint.
-          <ProductDetail product={selectedProduct} accent={accent} />
-        ) : (
-          <Box flexDirection="column">
-            <Text dimColor>No product selected.</Text>
-            <Text dimColor>esc to go back</Text>
-          </Box>
-        )
-      ) : null}
+  // ── DETAIL (full-screen PDP) ──────────────────────────────────────────────
+  if (view === "detail") {
+    return (
+      <Box flexDirection="column" height={rows} paddingX={1}>
+        {header}
+        <Box
+          flexGrow={1}
+          flexShrink={1}
+          minHeight={0}
+          flexDirection="column"
+          overflow="hidden"
+        >
+          {selectedProduct ? (
+            <ProductDetail product={selectedProduct} accent={accent} showFooter />
+          ) : (
+            <Box flexDirection="column">
+              <Text dimColor>No product selected.</Text>
+              <Text dimColor>esc to go back</Text>
+            </Box>
+          )}
+        </Box>
+      </Box>
+    );
+  }
+
+  // ── STORE (landing ⇄ results, chat-shaped) ────────────────────────────────
+  // Content region: spinner (first search) / landing tiles / results dispatch.
+  let content: React.ReactNode;
+  if (loading && results.length === 0) {
+    content = (
+      <Box flexGrow={1} alignItems="center" justifyContent="center">
+        <Text>
+          <Text color={accent}>
+            <Spinner type="dots" />
+          </Text>{" "}
+          <Text dimColor>searching {brand?.name ?? ""}…</Text>
+        </Text>
+      </Box>
+    );
+  } else if (!hasSearched) {
+    content = (
+      <StoreLanding
+        brand={brand}
+        highlights={highlights}
+        tileIndex={tileIndex}
+        accent={accent}
+        loading={highlightsLoading}
+      />
+    );
+  } else if (results.length === 0) {
+    content = (
+      <Box marginTop={1}>
+        <Text dimColor>No matches — try another search or a highlight.</Text>
+      </Box>
+    );
+  } else {
+    const kind = resultsView(results.length);
+    content =
+      kind === "single" ? (
+        <ProductDetail
+          product={results[0]}
+          accent={accent}
+          showFooter={false}
+          maxDescLines={singleDescLines}
+        />
+      ) : kind === "comparison" ? (
+        <Comparison
+          products={results}
+          selectedIndex={selectedIndex}
+          accent={accent}
+        />
+      ) : (
+        <ResultsGrid
+          products={results}
+          selectedIndex={selectedIndex}
+          accent={accent}
+          maxRows={gridMaxRows}
+        />
+      );
+  }
+
+  // Footer hint depends on the sub-state.
+  const hint = !hasSearched
+    ? tileCount > 0
+      ? "↑↓ pick · enter open · type to search · esc back"
+      : "type to search · esc back"
+    : loading
+      ? "searching…"
+      : focusedChipIndex >= 0
+        ? "enter run · tab next · esc"
+        : visibleChips.length > 0
+          ? "↑↓ select · enter open · #N · tab chips · esc"
+          : "↑↓ select · enter open · #N · esc";
+
+  const placeholder = !hasSearched
+    ? `search ${brand?.name ?? "this store"}… or pick a highlight ↑`
+    : undefined;
+
+  const answerShown =
+    answer && answer.length > ANSWER_MAX_CHARS
+      ? `${answer.slice(0, ANSWER_MAX_CHARS - 1)}…`
+      : answer;
+
+  return (
+    <Box flexDirection="column" height={rows} paddingX={1}>
+      {header}
+
+      <Box
+        flexGrow={1}
+        flexShrink={1}
+        minHeight={0}
+        flexDirection="column"
+        overflow="hidden"
+      >
+        {content}
+      </Box>
+
+      {/* Pinned bottom chrome (flexShrink=0): assistant line + search + status.
+          The content region above shrinks/clips instead of pushing these off. */}
+      <Box flexShrink={0} flexDirection="column">
+        {/* Assistant line, just above the input. While re-searching (prior
+            results still on screen) a small spinner sits here; the empty first
+            search shows the big centered spinner in the content region instead.
+            Default foreground so the answer stays readable on any brand accent. */}
+        <Box minHeight={1}>
+          {loading && results.length > 0 ? (
+            <Text>
+              <Text color={accent}>
+                <Spinner type="dots" />
+              </Text>{" "}
+              <Text dimColor>searching {brand?.name ?? ""}…</Text>
+            </Text>
+          ) : !loading && answerShown ? (
+            <TypewriterText text={answerShown} />
+          ) : null}
+        </Box>
+
+        <SearchBar
+          value={query}
+          onChange={setQuery}
+          onSubmit={handleSubmit}
+          chips={hasSearched ? highlights : []}
+          brandAccent={accent}
+          focusedChipIndex={focusedChipIndex}
+          placeholder={placeholder}
+        />
+
+        <StatusBar
+          brand={brand}
+          query={hasSearched ? activeQuery : undefined}
+          count={hasSearched && !loading ? results.length : undefined}
+          durationMs={hasSearched && !loading ? durationMs : undefined}
+          hint={hint}
+          accent={accent}
+        />
+      </Box>
     </Box>
   );
 }

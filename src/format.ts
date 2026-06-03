@@ -70,3 +70,42 @@ export function stripAnsi(s: string): string {
   // eslint-disable-next-line no-control-regex
   return s.replace(/\x1b\[[0-9;]*m/g, "");
 }
+
+/**
+ * Greedily word-wrap `text` to at most `width` columns, returning one string
+ * per line. Single words longer than `width` are hard-split so nothing
+ * overflows. Returns an empty array for blank input. Shared by the detail and
+ * comparison views so wrapping behaves identically across them.
+ */
+export function wrapText(text: string, width: number): string[] {
+  if (!text || width <= 0) return [];
+  const lines: string[] = [];
+  let current = "";
+
+  for (const rawWord of text.split(/\s+/)) {
+    if (rawWord === "") continue;
+
+    let word = rawWord;
+    // Hard-split words that can never fit on a single line.
+    while (word.length > width) {
+      if (current !== "") {
+        lines.push(current);
+        current = "";
+      }
+      lines.push(word.slice(0, width));
+      word = word.slice(width);
+    }
+
+    if (current === "") {
+      current = word;
+    } else if (current.length + 1 + word.length <= width) {
+      current += ` ${word}`;
+    } else {
+      lines.push(current);
+      current = word;
+    }
+  }
+
+  if (current !== "") lines.push(current);
+  return lines;
+}

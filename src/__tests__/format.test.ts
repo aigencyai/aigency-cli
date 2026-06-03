@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { formatPrice, stars, truncate, stripAnsi } from "../format.js";
+import { formatPrice, stars, truncate, stripAnsi, wrapText } from "../format.js";
 
 describe("stripAnsi", () => {
   it("removes SGR color escapes, keeping the braille", () => {
@@ -34,5 +34,26 @@ describe("truncate", () => {
   it("truncates with an ellipsis, leaves short strings", () => {
     expect(truncate("hello world", 8)).toBe("hello w…");
     expect(truncate("hi", 8)).toBe("hi");
+  });
+});
+
+describe("wrapText", () => {
+  it("greedily wraps to the given width", () => {
+    expect(wrapText("the quick brown fox", 9)).toEqual([
+      "the quick",
+      "brown fox",
+    ]);
+  });
+  it("hard-splits a word longer than the width", () => {
+    expect(wrapText("supercalifragilistic", 6)).toEqual([
+      "superc",
+      "alifra",
+      "gilist",
+      "ic",
+    ]);
+  });
+  it("returns [] for blank input or non-positive width", () => {
+    expect(wrapText("", 10)).toEqual([]);
+    expect(wrapText("hi", 0)).toEqual([]);
   });
 });

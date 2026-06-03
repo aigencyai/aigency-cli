@@ -22,6 +22,8 @@ import type { BrandInfo } from "../types.js";
 export interface StatusBarProps {
   /** Current brand, when one is selected. */
   brand?: BrandInfo;
+  /** The query that produced the current results (shown quoted, when present). */
+  query?: string;
   /** Number of results currently shown. */
   count?: number;
   /** Last search duration in milliseconds. */
@@ -37,6 +39,7 @@ const FALLBACK_WIDTH = 80;
 
 export function StatusBar({
   brand,
+  query,
   count,
   durationMs,
   hint,
@@ -48,6 +51,7 @@ export function StatusBar({
 
   const parts: string[] = [];
   if (brand) parts.push(brand.name);
+  if (query && query.trim()) parts.push(`“${query.trim()}”`);
   if (typeof count === "number") {
     parts.push(`${count} ${count === 1 ? "result" : "results"}`);
   }

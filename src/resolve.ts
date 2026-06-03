@@ -83,3 +83,35 @@ export function resolveInput(raw: string, resultCount: number): Resolved {
   // Everything else is a normal search query.
   return { kind: "search", query: text };
 }
+
+/** The decoded meaning of an Enter on the store LANDING (before any search). */
+export type LandingResolved =
+  | { kind: "tile"; index: number }
+  | { kind: "search"; query: string };
+
+/**
+ * Decode a landing-view Enter. Unlike the results grammar, the landing only
+ * distinguishes "open a highlight tile" from "search":
+ *
+ *   ""          → open the focused tile (`tileIndex`)
+ *   "1".."N"    → open that tile (1-based, in range)
+ *   anything    → search (incl. an out-of-range or zero number, which is a
+ *                 legitimate query like "0" or "99")
+ *
+ * `index` is 0-BASED. The caller still range-checks `index` against the live
+ * tiles array (an empty box with no tiles resolves to index `tileIndex`, which
+ * the caller treats as a no-op when no tile exists there).
+ */
+export function resolveLanding(
+  raw: string,
+  tileCount: number,
+  tileIndex: number,
+): LandingResolved {
+  const text = raw.trim();
+  if (text === "") return { kind: "tile", index: tileIndex };
+  if (/^\d+$/.test(text)) {
+    const n = Number.parseInt(text, 10);
+    if (n >= 1 && n <= tileCount) return { kind: "tile", index: n - 1 };
+  }
+  return { kind: "search", query: text };
+}

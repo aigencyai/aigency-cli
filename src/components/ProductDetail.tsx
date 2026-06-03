@@ -26,7 +26,7 @@
 import React from "react";
 import { Box, Text, useStdout } from "ink";
 import type { Product } from "../types.js";
-import { formatPrice, stars, stripAnsi } from "../format.js";
+import { formatPrice, stars, stripAnsi, wrapText } from "../format.js";
 
 /** Border (2 cols) + paddingX 1 each side (2 cols) eaten by the panel chrome. */
 const PANEL_CHROME_COLS = 4;
@@ -40,44 +40,17 @@ export interface ProductDetailProps {
   product: Product;
   /** Optional brand accent hex for headings, labels, and the panel border. */
   accent?: string;
-}
-
-/**
- * Greedily word-wrap `text` to at most `width` columns, returning one string
- * per line. Single words longer than `width` are hard-split so nothing
- * overflows the panel. Returns an empty array for blank input.
- */
-function wrapText(text: string, width: number): string[] {
-  if (!text || width <= 0) return [];
-  const lines: string[] = [];
-  let current = "";
-
-  for (const rawWord of text.split(/\s+/)) {
-    if (rawWord === "") continue;
-
-    let word = rawWord;
-    // Hard-split words that can never fit on a single line.
-    while (word.length > width) {
-      if (current !== "") {
-        lines.push(current);
-        current = "";
-      }
-      lines.push(word.slice(0, width));
-      word = word.slice(width);
-    }
-
-    if (current === "") {
-      current = word;
-    } else if (current.length + 1 + word.length <= width) {
-      current += ` ${word}`;
-    } else {
-      lines.push(current);
-      current = word;
-    }
-  }
-
-  if (current !== "") lines.push(current);
-  return lines;
+  /**
+   * Render the "esc back · o open · q quit" footer. True for the full-screen
+   * detail view; false when this panel is embedded as the single-result view
+   * inside the store (where the SearchBar/StatusBar already carry the hints).
+   */
+  showFooter?: boolean;
+  /**
+   * Override the description line cap. The embedded single-result view passes a
+   * tighter budget so the panel always fits above the pinned search field.
+   */
+  maxDescLines?: number;
 }
 
 /** Render an array of pre-wrapped lines as stacked, non-reflowing Text rows. */
@@ -104,6 +77,8 @@ function Lines({
 export function ProductDetail({
   product,
   accent,
+  showFooter = true,
+  maxDescLines = DESCRIPTION_MAX_LINES,
 }: ProductDetailProps): React.ReactElement {
   const { stdout } = useStdout();
   const columns = stdout?.columns || FALLBACK_COLUMNS;
@@ -131,7 +106,7 @@ export function ProductDetail({
     : [];
 
   const descLines = product.description
-    ? wrapText(product.description, innerWidth).slice(0, DESCRIPTION_MAX_LINES)
+    ? wrapText(product.description, innerWidth).slice(0, maxDescLines)
     : [];
 
   const colors = Array.isArray(product.colors) ? product.colors : [];
@@ -217,9 +192,11 @@ export function ProductDetail({
         </Box>
       ) : null}
 
-      <Box marginTop={1}>
-        <Text dimColor>esc back · o open · q quit</Text>
-      </Box>
+      {showFooter ? (
+        <Box marginTop={1}>
+          <Text dimColor>esc back · o open · q quit</Text>
+        </Box>
+      ) : null}
     </Box>
   );
 }

@@ -5,12 +5,20 @@
  * AbortController with a ~15s timeout so a hung backend never freezes the TUI.
  * Callers may also pass their own AbortSignal (e.g. to cancel an in-flight
  * search when the user types a new query); both signals are honored.
+ *
+ * Every request also carries the first-party {@link aigencyHeaders} (User-Agent,
+ * X-Agent-Name, X-Channel, X-Session-Id) so the backend attributes the traffic
+ * to "Aigency CLI" and groups a run's searches + click-through into one session.
  */
 
 import type { Highlight, SearchResponse } from "./types.js";
+import { UTM_SOURCE, aigencyHeaders } from "./session.js";
 
 /** Request timeout in milliseconds. */
 const TIMEOUT_MS = 15_000;
+
+/** Tracking POSTs are best-effort and never block the UI; keep them snappy. */
+const TRACK_TIMEOUT_MS = 5_000;
 
 /**
  * API base URL. Override with the AIGENCY_URL env var (useful for local dev
@@ -25,12 +33,12 @@ export const BASE_URL: string = (
  * Combine an external AbortSignal (if any) with an internal timeout signal.
  * Returns the timeout's controller so the caller can clear the timer.
  */
-function withTimeout(external?: AbortSignal): {
-  signal: AbortSignal;
-  cancel: () => void;
-} {
+function withTimeout(
+  ms: number,
+  external?: AbortSignal,
+): { signal: AbortSignal; cancel: () => void } {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), ms);
 
   // If the caller's signal aborts, propagate to our controller.
   if (external) {
@@ -59,16 +67,17 @@ function withTimeout(external?: AbortSignal): {
 export async function search(
   brand: string,
   query: string,
+  sessionId: string,
   signal?: AbortSignal,
 ): Promise<SearchResponse> {
   const url =
     `${BASE_URL}/api/${encodeURIComponent(brand)}` +
     `?q=${encodeURIComponent(query)}&format=json&thumbnails=braille`;
 
-  const { signal: timed, cancel } = withTimeout(signal);
+  const { signal: timed, cancel } = withTimeout(TIMEOUT_MS, signal);
   try {
     const res = await fetch(url, {
-      headers: { Accept: "application/json" },
+      headers: aigencyHeaders(sessionId),
       signal: timed,
     });
 
@@ -94,23 +103,27 @@ export async function search(
 }
 
 /**
- * Fetch suggested-query highlights for `brand`.
+ * Fetch suggested-query highlights for `brand`, with braille thumbnails so the
+ * store landing can render each as a picture tile.
  *
- * GET {BASE_URL}/api/highlights/{brand} → reads `.items` (or `[]`).
+ * GET {BASE_URL}/api/highlights/{brand}?thumbnails=braille → reads `.items`.
  *
  * Highlights are decorative; a failure here should never break the flow, so
  * any error (network, timeout, bad shape) resolves to an empty array.
  */
 export async function getHighlights(
   brand: string,
+  sessionId: string,
   signal?: AbortSignal,
 ): Promise<Highlight[]> {
-  const url = `${BASE_URL}/api/highlights/${encodeURIComponent(brand)}`;
+  const url =
+    `${BASE_URL}/api/highlights/${encodeURIComponent(brand)}` +
+    `?thumbnails=braille`;
 
-  const { signal: timed, cancel } = withTimeout(signal);
+  const { signal: timed, cancel } = withTimeout(TIMEOUT_MS, signal);
   try {
     const res = await fetch(url, {
-      headers: { Accept: "application/json" },
+      headers: aigencyHeaders(sessionId),
       signal: timed,
     });
     if (!res.ok) return [];
@@ -127,6 +140,55 @@ export async function getHighlights(
   } catch {
     // Tolerate any failure — highlights are optional UI sugar.
     return [];
+  } finally {
+    cancel();
+  }
+}
+
+/** Shape of a click-through event reported to the API. */
+export interface ClickThrough {
+  /** Brand key the product belongs to (e.g. "ray-ban"). */
+  brand: string;
+  /** Product title the user clicked through on. */
+  product: string;
+  /** Canonical product / PDP URL that was opened. */
+  url?: string;
+}
+
+/**
+ * Report a PDP click-through for `product` so the portal session shows the
+ * specific item the user opened (not just the keywords they searched). Fired
+ * when the user opens a product in their browser.
+ *
+ * POST {BASE_URL}/api/track  {event:"click_through", sessionId, brandKey, …}
+ *
+ * Best-effort and non-blocking: this NEVER throws and resolves regardless of
+ * outcome, so opening a product is never gated on analytics succeeding.
+ */
+export async function trackClickThrough(
+  ev: ClickThrough,
+  sessionId: string,
+): Promise<void> {
+  const { signal, cancel } = withTimeout(TRACK_TIMEOUT_MS);
+  try {
+    await fetch(`${BASE_URL}/api/track`, {
+      method: "POST",
+      headers: {
+        ...aigencyHeaders(sessionId),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        event: "click_through",
+        sessionId,
+        brandKey: ev.brand,
+        product: ev.product,
+        url: ev.url,
+        utmSource: UTM_SOURCE,
+      }),
+      signal,
+    });
+  } catch {
+    // Analytics is best-effort; swallow everything (incl. timeout/abort).
   } finally {
     cancel();
   }

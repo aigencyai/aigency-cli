@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { resolveInput, type Resolved } from "../resolve.js";
+import { resolveInput, resolveLanding, type Resolved } from "../resolve.js";
 
 describe("resolveInput", () => {
   const COUNT = 8; // pretend the results view shows 8 products (indices 0..7)
@@ -121,6 +121,31 @@ describe("resolveInput", () => {
     expect(resolveInput("comparison shirts", COUNT)).toEqual<Resolved>({
       kind: "search",
       query: "comparison shirts",
+    });
+  });
+});
+
+describe("resolveLanding", () => {
+  const TILES = 4; // 4 highlight tiles, focused tile index 1
+
+  it("empty input opens the focused tile", () => {
+    expect(resolveLanding("", TILES, 1)).toEqual({ kind: "tile", index: 1 });
+  });
+
+  it("a bare in-range number opens that tile (1-based → 0-based)", () => {
+    expect(resolveLanding("3", TILES, 0)).toEqual({ kind: "tile", index: 2 });
+    expect(resolveLanding(" 1 ", TILES, 0)).toEqual({ kind: "tile", index: 0 });
+  });
+
+  it("an out-of-range / zero number is a search, not a tile", () => {
+    expect(resolveLanding("9", TILES, 0)).toEqual({ kind: "search", query: "9" });
+    expect(resolveLanding("0", TILES, 0)).toEqual({ kind: "search", query: "0" });
+  });
+
+  it("any other text is a search", () => {
+    expect(resolveLanding("aviators", TILES, 0)).toEqual({
+      kind: "search",
+      query: "aviators",
     });
   });
 });
