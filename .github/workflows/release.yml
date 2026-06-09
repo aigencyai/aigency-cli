@@ -1,0 +1,161 @@
+# Release pipeline — fires on a `v*` tag and ships all three channels:
+#   npm  ·  GitHub Release (self-contained brew tarball)  ·  Homebrew tap bump
+#
+#   git tag v0.2.2 && git push --follow-tags
+#         │
+#         ▼  (this workflow)
+#   verify tag↔package.json → test → build → pack tarball
+#         → npm publish → GitHub Release → push tap formula bump
+#
+# Every step is idempotent (skip-if-already-published, --clobber asset,
+# commit-only-if-changed) so re-running a failed run is safe.
+#
+# Required repo secrets (Settings → Secrets and variables → Actions):
+#   NPM_TOKEN          — npm *Automation* token for the `aigencyai` account
+#                        (bypasses the 2FA/OTP prompt in CI).
+#   HOMEBREW_TAP_TOKEN — PAT with `contents:write` on aigencyai/homebrew-tap
+#                        (GITHUB_TOKEN can't reach another repo).
+# See RELEASING.md for the full cut-a-release flow.
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # create the GitHub Release
+  id-token: write # npm provenance (public repo → verified supply-chain link)
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Derive version from tag
+        id: ver
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"          # e.g. v0.2.2
+          VERSION="${TAG#v}"                # e.g. 0.2.2
+          echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Releasing $TAG (version $VERSION)"
+
+      - name: Verify package.json matches the tag
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          PKG="$(jq -r .version package.json)"
+          if [ "$PKG" != "$VERSION" ]; then
+            echo "::error::package.json version ($PKG) != tag ($VERSION). Bump package.json before tagging."
+            exit 1
+          fi
+
+      - run: npm ci
+
+      - run: npm run typecheck
+      - run: npx vitest run
+      - run: npm run build
+
+      - name: Pack the self-contained brew tarball
+        id: pack
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          TARBALL="aigency-${VERSION}.tar.gz"
+          STAGE="$(mktemp -d)"
+
+          # The brew formula vendors dist + PRODUCTION node_modules (no network
+          # at `brew install`), unlike the npm tarball which ships only `dist`.
+          cp -R dist package.json package-lock.json README.md LICENSE "$STAGE/"
+          ( cd "$STAGE" && npm ci --omit=dev --ignore-scripts )
+
+          # Smoke test: with no TTY the CLI must print the hint and exit 1
+          # (mirrors the formula's `test do` block).
+          set +e
+          OUT="$(node "$STAGE/dist/cli.js" </dev/null 2>&1)"; CODE=$?
+          set -e
+          echo "$OUT"
+          if [ "$CODE" -ne 1 ] || ! printf '%s' "$OUT" | grep -q "interactive terminal app"; then
+            echo "::error::brew bundle smoke test failed (exit $CODE)"
+            exit 1
+          fi
+
+          ( cd "$STAGE" && tar czf "$GITHUB_WORKSPACE/$TARBALL" dist node_modules package.json README.md LICENSE )
+          SHA="$(sha256sum "$TARBALL" | awk '{print $1}')"
+          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA"      >> "$GITHUB_OUTPUT"
+          echo "Built $TARBALL (sha256 $SHA)"
+
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          if npm view "aigency@${VERSION}" version >/dev/null 2>&1; then
+            echo "aigency@${VERSION} is already on npm — skipping publish."
+          else
+            npm publish --provenance --access public
+          fi
+
+      - name: GitHub Release (with the brew tarball asset)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: |
+          set -euo pipefail
+          # Release notes: the matching CHANGELOG section, else auto-generated.
+          NOTES="$(awk -v v="$VERSION" '
+            index($0, "## [" v "]") == 1 { f = 1; next }
+            f && /^## \[/ { exit }
+            f { print }
+          ' CHANGELOG.md)"
+
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$TARBALL" --clobber --repo "$REPO"
+            if [ -n "$NOTES" ]; then
+              gh release edit "$TAG" --notes "$NOTES" --repo "$REPO"
+            fi
+          elif [ -n "$NOTES" ]; then
+            gh release create "$TAG" "$TARBALL" --repo "$REPO" --title "$TAG" --notes "$NOTES"
+          else
+            gh release create "$TAG" "$TARBALL" --repo "$REPO" --title "$TAG" --generate-notes
+          fi
+
+      - name: Bump the Homebrew tap (direct push)
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+          SHA: ${{ steps.pack.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          URL="https://github.com/${REPO}/releases/download/${TAG}/${TARBALL}"
+          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/aigencyai/homebrew-tap.git" tap
+          cd tap
+          sed -i -E "s|^( *)url \".*\"|\1url \"${URL}\"|"       Formula/aigency.rb
+          sed -i -E "s|^( *)sha256 \".*\"|\1sha256 \"${SHA}\"|" Formula/aigency.rb
+          if git diff --quiet; then
+            echo "Tap formula already points at ${VERSION} — nothing to push."
+          else
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -am "aigency ${VERSION}"
+            git push
+          fi
