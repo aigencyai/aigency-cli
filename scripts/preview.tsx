@@ -94,6 +94,19 @@ frame(
   <WordmarkIgnition accent={accent} onDone={() => {}} previewFrame={34} />,
 );
 frame(
+  "INTRO · READY (press any key to enter)",
+  <WordmarkIgnition accent={accent} onDone={() => {}} previewPhase="ready" />,
+);
+frame(
+  "INTRO · ENTERING (warp / zoom-through)",
+  <WordmarkIgnition
+    accent={accent}
+    onDone={() => {}}
+    previewPhase="entering"
+    previewEnterFrame={6}
+  />,
+);
+frame(
   "BRAND PICKER",
   <BrandPicker brands={BRANDS} onSelect={() => {}} selectedKey="ray-ban" />,
 );

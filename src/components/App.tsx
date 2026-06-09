@@ -2,8 +2,8 @@
  * App — the root component. Owns ALL application state and the entire keyboard
  * model, wiring a guided, command-line-driven flow across four views.
  *
- *   ┌───────┐ done/any key ┌────────┐  enter/1-9   ┌─────────────────────┐
- *   │ intro │ ────────────▶│ picker │ ────────────▶│ store               │
+ *   ┌───────┐ key→enter→done ┌────────┐ enter/1-9   ┌─────────────────────┐
+ *   │ intro │ ──────────────▶│ picker │ ───────────▶│ store               │
  *   └───────┘              └────────┘              │  landing ⇄ results  │
  *                              ▲  esc               └─────────┬───────────┘
  *                              └──── esc ─────────────────────┤  enter/#N
@@ -20,7 +20,8 @@
  *
  * Keyboard model
  * ──────────────
- *   INTRO    any key skips to the picker.
+ *   INTRO    the cold-open holds on a "press any key to enter" welcome; a key
+ *            advances it one step (reveal → enter → skip) then hands to picker.
  *   PICKER   arrows move the grid highlight; up/down step one row; 1-9 jump+
  *            select; enter selects; q quits.
  *   STORE    the SearchBar is ALWAYS focused for typing.
@@ -158,6 +159,11 @@ export function App({
   // Whether a search has run in the current store (landing vs results).
   const [hasSearched, setHasSearched] = useState<boolean>(false);
 
+  // Bumped on each intro keypress; WordmarkIgnition interprets it by phase
+  // (reveal the welcome → enter → skip the warp). The intro no longer auto-
+  // advances, so a key is the ONLY way past it.
+  const [introAdvance, setIntroAdvance] = useState<number>(0);
+
   // Picker highlight; landing tile focus; results chip focus.
   const [pickerIndex, setPickerIndex] = useState<number>(0);
   const [tileIndex, setTileIndex] = useState<number>(0);
@@ -275,9 +281,10 @@ export function App({
   // ── Input handling ──────────────────────────────────────────────────────
   const handleInput = useCallback(
     (input: string, key: Key) => {
-      // ── INTRO: any key skips. ───────────────────────────────────────────
+      // ── INTRO: any key advances the cold-open one step (reveal → enter →
+      // skip). WordmarkIgnition owns the phase logic; we just signal it. ────
       if (view === "intro") {
-        finishIntro();
+        setIntroAdvance((n) => n + 1);
         return;
       }
 
@@ -404,7 +411,6 @@ export function App({
     },
     [
       view,
-      finishIntro,
       exit,
       selectBrand,
       pickerColumns,
@@ -522,7 +528,12 @@ export function App({
   if (view === "intro") {
     return (
       <Box width="100%" height={rows} overflow="hidden">
-        <WordmarkIgnition accent={accent} onDone={finishIntro} />
+        <WordmarkIgnition
+          accent={accent}
+          onDone={finishIntro}
+          advanceSignal={introAdvance}
+          interactive={isRawModeSupported}
+        />
       </Box>
     );
   }

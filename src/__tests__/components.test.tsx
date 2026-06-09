@@ -2,7 +2,9 @@ import React from "react";
 import { describe, it, expect, vi } from "vitest";
 import { render } from "ink-testing-library";
 
-import WordmarkIgnition from "../components/WordmarkIgnition.js";
+import WordmarkIgnition, {
+  advanceIntro,
+} from "../components/WordmarkIgnition.js";
 import StoreLanding from "../components/StoreLanding.js";
 import Comparison from "../components/Comparison.js";
 import ProductDetail from "../components/ProductDetail.js";
@@ -41,6 +43,56 @@ describe("WordmarkIgnition", () => {
       <WordmarkIgnition accent={accent} onDone={() => {}} previewFrame={0} />,
     );
     expect(lastFrame()).not.toContain("a i g e n c y");
+  });
+
+  it("holds on READY with the tagline + a press-any-key prompt", () => {
+    const onDone = vi.fn();
+    const { lastFrame } = render(
+      <WordmarkIgnition accent={accent} onDone={onDone} previewPhase="ready" />,
+    );
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("a i g e n c y");
+    expect(frame).toContain("online shopping was fine. we fixed it anyway.");
+    expect(frame).toContain("press any key to enter");
+    // READY waits for a key — it must NOT auto-hand-off.
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  it("spreads the wordmark and drops the prompt while ENTERING", () => {
+    const onDone = vi.fn();
+    const { lastFrame } = render(
+      <WordmarkIgnition
+        accent={accent}
+        onDone={onDone}
+        previewPhase="entering"
+        previewEnterFrame={6}
+      />,
+    );
+    const frame = lastFrame() ?? "";
+    // Letters are spread wider than the single-space resting state…
+    expect(frame).toMatch(/a {2,}i {2,}g/);
+    expect(frame).not.toContain("a i g e n c y");
+    // …and the prompt is gone during the warp.
+    expect(frame).not.toContain("press any key to enter");
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+});
+
+describe("advanceIntro (cold-open phase machine)", () => {
+  it("steps igniting → ready → entering on successive keypresses", () => {
+    expect(advanceIntro("igniting")).toEqual({ phase: "ready", done: false });
+    expect(advanceIntro("ready")).toEqual({ phase: "entering", done: false });
+  });
+
+  it("reaching READY never hands off on its own — only a key leaves it", () => {
+    // igniting and ready both stay (done:false); the welcome holds until a key.
+    expect(advanceIntro("igniting").done).toBe(false);
+    expect(advanceIntro("ready").done).toBe(false);
+  });
+
+  it("a key mid-warp skips straight to the picker", () => {
+    expect(advanceIntro("entering")).toEqual({ phase: "entering", done: true });
   });
 });
 
